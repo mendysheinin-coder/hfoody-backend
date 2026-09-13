@@ -1,0 +1,49 @@
+# Render Blueprint — one-click deploy, zero manual field-filling required.
+# On Render: New → Blueprint → point at your repo containing this file.
+# Render reads this and creates the service(s) below automatically.
+#
+# Cost check (verified against Render's 2026 pricing): the web service below
+# uses "plan: free" — Render's free web-service tier, $0/month, the instance
+# just sleeps after ~15 min of inactivity and takes a few seconds to wake up
+# on the next request. That's fine for a personal/prototype app.
+#
+# The commented-out cron job at the bottom is NOT free on Render (cron jobs
+# start around $1/month, billed per minute) — left here for when you want
+# scheduled auto-refresh of the Israeli product database and are fine with
+# that small cost. Until then, just re-run `python refresh_data.py` locally
+# and redeploy (or push the updated il_products.sqlite3) whenever you want
+# fresher prices — that path stays $0.
+
+services:
+  - type: web
+    name: hfoody-backend
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      # Shared public demo key — works immediately, no signup, no prompt
+      # during deploy. Rate-limited and shared with every other developer
+      # testing OCR.space, so swap it for your own free key later (Render
+      # dashboard → this service → Environment) once you outgrow it.
+      - key: OCR_SPACE_KEY
+        value: helloworld
+      - key: ALLOWED_ORIGINS
+        value: "*"           # tighten to your real domain once you have one
+      - key: IL_PRODUCTS_DB
+        value: il_products.sqlite3
+      # SPOONACULAR_KEY intentionally omitted: the app already runs fine
+      # without it (that one recipe tab just stays hidden). Add it the same
+      # way as above, later, only if you want it.
+
+# Uncomment to get scheduled refreshes of the Israeli product database.
+# Costs roughly $1/month minimum on Render (see note above).
+#
+#  - type: cron
+#    name: hfoody-refresh-il-products
+#    runtime: python
+#    plan: starter
+#    schedule: "0 3 * * *"   # daily at 03:00 UTC
+#    buildCommand: pip install -r requirements.txt
+#    startCommand: python refresh_data.py

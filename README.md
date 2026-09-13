@@ -57,19 +57,51 @@ GitHub Action, or your host's built-in cron feature all work.
 - `GET /api/spoonacular/search?query=...&diet=vegan`
 - `GET /api/il-products/search?barcode=...` or `?q=...`
 
-## Deploying at minimal cost
+## Getting to a live URL with the least manual work possible
 
-**One-click option:** this repo includes `render.yaml` — on Render, choose
-"New → Blueprint" and point it at your repo. It reads that file and creates
-the web service for you on Render's free tier, with the two API keys left
-blank for you to fill in via the dashboard (never commit real keys into
-`render.yaml` itself). See the comments inside `render.yaml` for the cron-job
-cost caveat.
+Render deploys from a Git repo, so there's one unavoidable manual step —
+getting this folder onto GitHub — everything after that is close to
+one-click.
 
-**Manual option**, on any of these (all have a free or near-free tier):
+**Step 1 — push this folder to GitHub** (copy-paste, replace `YOUR_REPO_NAME`):
 
-- **Render.com** — "New Web Service" from this repo, build command `pip install -r requirements.txt`, start command `uvicorn main:app --host 0.0.0.0 --port $PORT`. Free tier sleeps after inactivity (fine for a prototype); add a separate "Cron Job" service on Render for `refresh_data.py` (not free — see `render.yaml`).
-- **Railway.app** — similar flow, usage-based free credit monthly.
+If you have the [GitHub CLI](https://cli.github.com/) installed (`gh`), this
+one block does everything — creates the repo AND pushes, no website clicking:
+```bash
+cd backend
+git init
+git add .
+git commit -m "Initial commit"
+gh repo create YOUR_REPO_NAME --private --source=. --push
+```
+No `gh` CLI? Same result, one extra manual step (creating an empty repo on
+github.com first, then):
+```bash
+cd backend
+git init
+git add .
+git commit -m "Initial commit"
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
+git branch -M main
+git push -u origin main
+```
+
+**Step 2 — deploy.** Either:
+- Click this button after replacing the placeholder with your repo's URL —
+  it opens Render already pointed at your Blueprint, nothing to fill in:
+  `https://render.com/deploy?repo=https://github.com/YOUR_USERNAME/YOUR_REPO_NAME`
+- Or manually: Render dashboard → New → Blueprint → select your repo.
+
+Either way, `render.yaml` already has working defaults baked in (see the file
+itself), so there is no dashboard form to fill out — the free web service
+just builds and comes up live at `https://YOUR_SERVICE_NAME.onrender.com`.
+
+## Other hosts
+
+Render's Blueprint above is the path with the least manual setup, but any of
+these work too, all with a free or near-free tier:
+
+- **Railway.app** — similar flow to Render, usage-based free credit monthly.
 - **Fly.io** — `fly launch` picks up the Dockerfile automatically; free allowance covers a small always-on instance.
 
 Whichever you pick: set `OCR_SPACE_KEY`, `SPOONACULAR_KEY`, and `ALLOWED_ORIGINS`
