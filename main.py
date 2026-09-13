@@ -149,9 +149,20 @@ def il_products_search(
     return {"results": rows}
 
 
-# Serves the front-end (frontend/index.html) on the same origin as the API,
-# so the app can call "/api/..." with no CORS setup and no manual backend-URL
-# field. Mounted last so it never shadows the /api/* and /health routes above.
-_frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
-if os.path.isdir(_frontend_dir):
-    app.mount("/", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
+# Serves the front-end (index.html) on the same origin as the API, so the
+# app can call "/api/..." with no CORS setup and no manual backend-URL field.
+# Mounted last so it never shadows the /api/* and /health routes above.
+# Checks for a frontend/ subfolder first, and falls back to serving straight
+# from this file's own folder — so it works whether index.html ended up in
+# a frontend/ subfolder or was uploaded alongside main.py at the repo root.
+_here = os.path.dirname(__file__)
+_frontend_subdir = os.path.join(_here, "frontend")
+if os.path.isfile(os.path.join(_frontend_subdir, "index.html")):
+    _static_dir = _frontend_subdir
+elif os.path.isfile(os.path.join(_here, "index.html")):
+    _static_dir = _here
+else:
+    _static_dir = None
+
+if _static_dir:
+    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="frontend")
