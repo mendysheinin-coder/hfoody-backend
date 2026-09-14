@@ -63,7 +63,48 @@ def get_db():
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_store_barcode ON store_products(barcode)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shared_kv (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
     return conn
+
+
+@app.get("/api/shared-storage/{key}")
+def get_shared_storage(key: str):
+    conn = get_db()
+    row = conn.execute("SELECT value FROM shared_kv WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Key not found")
+    return {"key": key, "value": row[0]}
+
+
+@app.post("/api/shared-storage/{key}")
+async def set_shared_storage(key: str, request: Request):
+    body = await request.json()
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO shared_kv (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, body.get("value", "")),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.delete("/api/shared-storage/{key}")
+def delete_shared_storage(key: str):
+    conn = get_db()
+    conn.execute("DELETE FROM shared_kv WHERE key = ?", (key,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 @app.get("/health")
