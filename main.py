@@ -1,39 +1,5 @@
-"""
+ """
 Hfoody backend.
-
-Four jobs this service does that a client-only HTML page structurally cannot:
-  1. Hold API keys server-side (OCR.space, Spoonacular, Google Vision) instead
-     of shipping them to every visitor's browser.
-  2. Serve a local database of Israeli supermarket products (barcode, name,
-     price, chain) — pre-built by refresh_data.py, plus products supermarkets
-     submit directly (see access tiers below).
-  3. Give you one stable API surface to point the front-end at.
-  4. Enforce three access tiers with real server-side checks (not just hiding
-     buttons in the UI, which anyone could bypass by reading the page source):
-       - Customer:  the app itself. No login — profile/preferences live in the
-                    browser's own storage (window.storage), per device.
-       - Supermarket: can submit products (barcode, name, price, ingredients)
-                    via a shared access key. Simple by design — this is a
-                    single shared password per deployment, not individual
-                    per-store accounts with their own login. Fine for a
-                    prototype / one pilot partner; genuinely multiple stores
-                    needing separate logins and audit trails is a real,
-                    separate build (proper accounts + hashed passwords + a
-                    users table), not a header check.
-       - Developer: read-only stats endpoint, gated by a second shared key.
-    Both keys are compared with a constant-time check to avoid timing attacks,
-    but they are still simple shared secrets — treat them like a password you
-    hand to a trusted partner, not like per-user authentication.
-
-Run locally:
-    pip install -r requirements.txt
-    cp .env.example .env   # then edit .env with your real keys
-    uvicorn main:app --reload
-
-This code has NOT been run against live networks in the environment that wrote
-it (that sandbox has no internet access) — treat it as a solid, carefully
-written starting point, not as pre-verified. Test locally before deploying,
-and see README.md for what to check first if something doesn't work.
 """
 import hmac
 import os
@@ -43,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Form, Query, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Form, Query, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
@@ -53,6 +19,7 @@ load_dotenv()
 OCR_SPACE_KEY = os.environ.get("OCR_SPACE_KEY", "helloworld")
 GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_VISION_API_KEY", "")
 SPOONACULAR_KEY = os.environ.get("SPOONACULAR_KEY", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 DB_PATH = os.environ.get("IL_PRODUCTS_DB", "il_products.sqlite3")
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 STORE_ACCESS_KEY = os.environ.get("STORE_ACCESS_KEY", "")
@@ -109,31 +76,40 @@ def health():
 
 @app.get("/api/capabilities")
 def capabilities():
-    """
-    Public, no-auth endpoint the front-end calls once at startup to know which
-    optional features are configured — so a customer never sees a "paste your
-    API key" field for anything. Every third-party key lives only here, on
-    the server, set once by whoever runs this deployment (Render dashboard or
-    the Render MCP connector) — never entered by an end user.
-    """
     return {
         "spoonacular": bool(SPOONACULAR_KEY),
         "pantry_search": bool(SPOONACULAR_KEY),
         "vision_ocr": bool(GOOGLE_VISION_API_KEY),
+        "ai_analysis": bool(ANTHROPIC_API_KEY),
     }
+
+
+@app.post("/api/claude")
+async def claude_proxy(request: Request):
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="AI analysis isn't configured on the server yet (missing ANTHROPIC_API_KEY)",
+        )
+    payload = await request.json()
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json=payload,
+            )
+        return Response(content=resp.content, media_type="application/json", status_code=resp.status_code)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Claude request failed: {e}")
 
 
 @app.post("/api/ocr")
 async def ocr_proxy(image_base64: str = Form(...), language: str = Form("heb")):
-    """
-    Recognizes text in `image_base64` (a full data URL, e.g.
-    "data:image/jpeg;base64,....", exactly what a <canvas>.toDataURL() or
-    FileReader result already gives you client-side).
-
-    Uses Google Cloud Vision when GOOGLE_VISION_API_KEY is set (noticeably
-    more accurate on real, messy product labels) and falls back to OCR.space
-    otherwise, so nothing on the client needs to know which engine answered.
-    """
     if GOOGLE_VISION_API_KEY:
         try:
             return await _ocr_with_google_vision(image_base64)
@@ -165,7 +141,6 @@ async def ocr_proxy(image_base64: str = Form(...), language: str = Form("heb")):
 
 
 async def _ocr_with_google_vision(image_data_url: str):
-    # Vision wants raw base64 only — strip the "data:image/...;base64," prefix.
     raw_b64 = re.sub(r"^data:image/[^;]+;base64,", "", image_data_url)
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
@@ -175,7 +150,6 @@ async def _ocr_with_google_vision(image_data_url: str):
                     {
                         "image": {"content": raw_b64},
                         "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
-                        # Hebrew label with embedded Latin/numbers is the common case
                         "imageContext": {"languageHints": ["he", "en"]},
                     }
                 ]
@@ -219,23 +193,16 @@ async def spoonacular_search(
         raise HTTPException(status_code=502, detail=f"Spoonacular request failed: {e}")
 
 
-
 @app.get("/api/il-products/search")
 def il_products_search(
     barcode: Optional[str] = None,
     q: Optional[str] = None,
     limit: int = Query(20, le=50),
 ):
-    """
-    Searches Israeli product data from two sources, store-submitted first
-    (more trustworthy — it came from the store itself, including real
-    ingredients) then the price-transparency scrape (barcode/name/price only,
-    built by refresh_data.py — absent until that's been run at least once).
-    """
     if not barcode and not q:
         raise HTTPException(status_code=400, detail="Provide barcode or q")
 
-    conn = get_db()  # ensures store_products exists even on a brand-new DB file
+    conn = get_db()
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     results = []
@@ -271,7 +238,7 @@ def il_products_search(
             )
         results.extend(dict(r) for r in cur.fetchall())
     except sqlite3.OperationalError:
-        pass  # `products` table doesn't exist yet — refresh_data.py hasn't run, that's fine
+        pass
 
     conn.close()
     return {"results": results[:limit]}
@@ -286,7 +253,6 @@ async def submit_store_product(
     store_name: str = Form(""),
     _auth=Depends(require_store_key),
 ):
-    """Access tier B (supermarket): submit a product with real data."""
     conn = get_db()
     conn.execute(
         "INSERT INTO store_products (barcode, name, price, ingredients_text, store_name, submitted_at) "
@@ -301,7 +267,6 @@ async def submit_store_product(
 
 @app.get("/api/store/products")
 async def list_store_products(limit: int = Query(50, le=200), _auth=Depends(require_store_key)):
-    """Lets a logged-in store see what it (or others) has submitted so far."""
     conn = get_db()
     conn.row_factory = sqlite3.Row
     cur = conn.execute(
@@ -316,7 +281,6 @@ async def list_store_products(limit: int = Query(50, le=200), _auth=Depends(requ
 
 @app.get("/api/admin/stats")
 async def admin_stats(_auth=Depends(require_dev_key)):
-    """Access tier C (developer): read-only counts, no PII exposed."""
     conn = get_db()
     counts = {}
     counts["store_products"] = conn.execute("SELECT COUNT(*) FROM store_products").fetchone()[0]
@@ -334,12 +298,6 @@ async def admin_stats(_auth=Depends(require_dev_key)):
     }
 
 
-# Serves the front-end (index.html) on the same origin as the API, so the
-# app can call "/api/..." with no CORS setup and no manual backend-URL field.
-# Mounted last so it never shadows the /api/* and /health routes above.
-# Checks for a frontend/ subfolder first, and falls back to serving straight
-# from this file's own folder — so it works whether index.html ended up in
-# a frontend/ subfolder or was uploaded alongside main.py at the repo root.
 _here = os.path.dirname(__file__)
 _frontend_subdir = os.path.join(_here, "frontend")
 if os.path.isfile(os.path.join(_frontend_subdir, "index.html")):
@@ -354,9 +312,6 @@ if _static_dir:
 
     @app.get("/", include_in_schema=False)
     def serve_index():
-        # Explicit no-store so phones (mobile Chrome especially) never show a
-        # stale cached copy after you push an update — every page load
-        # re-fetches the real current file from the server.
         with open(_index_path, "r", encoding="utf-8") as f:
             html = f.read()
         return Response(
@@ -365,7 +320,4 @@ if _static_dir:
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
         )
 
-    # Everything else (icons, manifest.json) can still be cached normally —
-    # only the HTML itself needs to always be fresh.
     app.mount("/", StaticFiles(directory=_static_dir), name="frontend")
-
