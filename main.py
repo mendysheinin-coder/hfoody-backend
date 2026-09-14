@@ -1,6 +1,3 @@
- """
-Hfoody backend.
-"""
 import hmac
 import os
 import re
