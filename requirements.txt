@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+httpx
+python-multipart
+python-dotenv
+pandas
+il-supermarket-scraper
+il-supermarket-parser
+psycopg2-binary
+PyJWT
+bcrypt
+email-validator
